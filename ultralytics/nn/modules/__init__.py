@@ -75,6 +75,11 @@ from .conv import (
     LightConv,
     RepConv,
     SpatialAttention,
+    PHA,
+    SHA,
+    CoordAtt,
+    ShiftViTBlockv2,
+
 )
 from .head import (
     OBB,
@@ -179,4 +184,8 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
+    "PHA",
+    "SHA",
+    "CoordAtt",
+    "ShiftViTBlockv2",
 )

@@ -19,8 +19,15 @@ from .transformer import MLP, DeformableTransformerDecoder, DeformableTransforme
 from .utils import bias_init_with_prob, linear_init
 
 __all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "YOLOEDetect", "YOLOESegment"
-
-
+def Atan2Angle(x):
+        vec_cos = x[:, 0, :]  # shape: [bs, ch]
+        vec_sin = x[:, 1, :]  # shape: [bs, ch]
+        vec_norm = torch.sqrt(vec_cos**2 + vec_sin**2)  # shape: [bs, ch]
+        vec_cos = vec_cos / vec_norm
+        vec_sin = vec_sin / vec_norm
+        # 還原角度 (以 atan2 表示在 [-π, π] 範圍內)
+        angle = torch.atan2(vec_sin, vec_cos)  # shape: [bs, ch]
+        return angle.unsqueeze(1)  # reshape from [bs, ch] to [bs, 1, ch]
 class Detect(nn.Module):
     """
     YOLO Detect head for object detection models.
@@ -282,62 +289,95 @@ class Segment(Detect):
         return (torch.cat([x, mc], 1), p) if self.export else (torch.cat([x[0], mc], 1), (x[1], mc, p))
 
 
+# class OBB(Detect):
+#     """
+#     YOLO OBB detection head for detection with rotation models.
+
+#     This class extends the Detect head to include oriented bounding box prediction with rotation angles.
+
+#     Attributes:
+#         ne (int): Number of extra parameters.
+#         cv4 (nn.ModuleList): Convolution layers for angle prediction.
+#         angle (torch.Tensor): Predicted rotation angles.
+
+#     Methods:
+#         forward: Concatenate and return predicted bounding boxes and class probabilities.
+#         decode_bboxes: Decode rotated bounding boxes.
+
+#     Examples:
+#         Create an OBB detection head
+#         >>> obb = OBB(nc=80, ne=1, ch=(256, 512, 1024))
+#         >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 1024, 20, 20)]
+#         >>> outputs = obb(x)
+#     """
+
+#     def __init__(self, nc: int = 80, ne: int = 1, ch: Tuple = ()):
+#         """
+#         Initialize OBB with number of classes `nc` and layer channels `ch`.
+
+#         Args:
+#             nc (int): Number of classes.
+#             ne (int): Number of extra parameters.
+#             ch (tuple): Tuple of channel sizes from backbone feature maps.
+#         """
+#         super().__init__(nc, ch)
+#         self.ne = ne  # number of extra parameters
+
+#         c4 = max(ch[0] // 4, self.ne)
+#         self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.ne, 1)) for x in ch)
+
+#     def forward(self, x: List[torch.Tensor]) -> Union[torch.Tensor, Tuple]:
+#         """Concatenate and return predicted bounding boxes and class probabilities."""
+#         bs = x[0].shape[0]  # batch size
+#         angle = torch.cat([self.cv4[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)], 2)  # OBB theta logits
+#         # NOTE: set `angle` as an attribute so that `decode_bboxes` could use it.
+#         angle = (angle.sigmoid() - 0.25) * math.pi  # [-pi/4, 3pi/4]
+#         # angle = angle.sigmoid() * math.pi / 2  # [0, pi/2]
+#         if not self.training:
+#             self.angle = angle
+#         x = Detect.forward(self, x)
+#         if self.training:
+#             return x, angle
+#         return torch.cat([x, angle], 1) if self.export else (torch.cat([x[0], angle], 1), (x[1], angle))
+
+#     def decode_bboxes(self, bboxes: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
+#         """Decode rotated bounding boxes."""
+#         return dist2rbox(bboxes, self.angle, anchors, dim=1)
+
 class OBB(Detect):
-    """
-    YOLO OBB detection head for detection with rotation models.
+    """YOLOv8 OBB detection head for detection with rotation models."""
 
-    This class extends the Detect head to include oriented bounding box prediction with rotation angles.
-
-    Attributes:
-        ne (int): Number of extra parameters.
-        cv4 (nn.ModuleList): Convolution layers for angle prediction.
-        angle (torch.Tensor): Predicted rotation angles.
-
-    Methods:
-        forward: Concatenate and return predicted bounding boxes and class probabilities.
-        decode_bboxes: Decode rotated bounding boxes.
-
-    Examples:
-        Create an OBB detection head
-        >>> obb = OBB(nc=80, ne=1, ch=(256, 512, 1024))
-        >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 1024, 20, 20)]
-        >>> outputs = obb(x)
-    """
-
-    def __init__(self, nc: int = 80, ne: int = 1, ch: Tuple = ()):
-        """
-        Initialize OBB with number of classes `nc` and layer channels `ch`.
-
-        Args:
-            nc (int): Number of classes.
-            ne (int): Number of extra parameters.
-            ch (tuple): Tuple of channel sizes from backbone feature maps.
-        """
+    def __init__(self, nc=80, ne=1, ch=()):
+        """Initialize OBB with number of classes `nc` and layer channels `ch`."""
         super().__init__(nc, ch)
         self.ne = ne  # number of extra parameters
-
+        self.detect = Detect.forward
         c4 = max(ch[0] // 4, self.ne)
+        # self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.coder_size, 1)) for x in ch)
         self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.ne, 1)) for x in ch)
 
-    def forward(self, x: List[torch.Tensor]) -> Union[torch.Tensor, Tuple]:
-        """Concatenate and return predicted bounding boxes and class probabilities."""
+    def forward(self, x):
+        """Concatenates and returns predicted bounding boxes and class probabilities."""
         bs = x[0].shape[0]  # batch size
-        angle = torch.cat([self.cv4[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)], 2)  # OBB theta logits
-        # NOTE: set `angle` as an attribute so that `decode_bboxes` could use it.
-        angle = (angle.sigmoid() - 0.25) * math.pi  # [-pi/4, 3pi/4]
-        # angle = angle.sigmoid() * math.pi / 2  # [0, pi/2]
+        if self.ne == 1:
+            angle = torch.cat([self.cv4[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)], 2)  # OBB theta logits
+            # NOTE: set `angle` as an attribute so that `decode_bboxes` could use it.
+            # angle = (angle.sigmoid() - 0.25) * math.pi  # [-pi/4, 3pi/4]
+            angle = angle.tanh() * math.pi
+        elif self.ne == 2:
+            vec = torch.cat([self.cv4[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)], 2)
+            angle = Atan2Angle(vec)
         if not self.training:
             self.angle = angle
-        x = Detect.forward(self, x)
+        x = self.detect(self, x)
+
         if self.training:
             return x, angle
         return torch.cat([x, angle], 1) if self.export else (torch.cat([x[0], angle], 1), (x[1], angle))
-
-    def decode_bboxes(self, bboxes: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
+    
+    def decode_bboxes(self, bboxes, anchors):
         """Decode rotated bounding boxes."""
         return dist2rbox(bboxes, self.angle, anchors, dim=1)
-
-
 class Pose(Detect):
     """
     YOLO Pose head for keypoints models.

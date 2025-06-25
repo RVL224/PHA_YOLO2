@@ -680,7 +680,8 @@ class v8OBBLoss(v8DetectionLoss):
 
     def __call__(self, preds: Any, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Calculate and return the loss for oriented bounding box detection."""
-        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        # loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        loss = torch.zeros(4, device=self.device)  # box, cls, dfl, ang
         feats, pred_angle = preds if isinstance(preds[0], list) else preds[1]
         batch_size = pred_angle.shape[0]  # batch size, number of masks, mask height, mask width
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
@@ -729,6 +730,9 @@ class v8OBBLoss(v8DetectionLoss):
             mask_gt,
         )
 
+        gt_angle = target_bboxes[..., 4]
+        gt_angle = gt_angle.unsqueeze(-1)
+
         target_scores_sum = max(target_scores.sum(), 1)
 
         # Cls loss
@@ -736,13 +740,26 @@ class v8OBBLoss(v8DetectionLoss):
         loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         # Bbox loss
+        # if fg_mask.sum():
+        #     target_bboxes[..., :4] /= stride_tensor
+        #     loss[0], loss[2] = self.bbox_loss(
+        #         pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask
+        #     )
+        # else:
+        #     loss[0] += (pred_angle * 0).sum()
+
         if fg_mask.sum():
             target_bboxes[..., :4] /= stride_tensor
             loss[0], loss[2] = self.bbox_loss(
                 pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask
             )
-        else:
-            loss[0] += (pred_angle * 0).sum()
+            pred_angle_fg = pred_angle[fg_mask.squeeze(-1)]
+            # print(pred_angle_fg.shape)
+            gt_angle_fg = gt_angle[fg_mask.squeeze(-1)]
+            cos_pred, sin_pred = torch.cos(pred_angle_fg), torch.sin(pred_angle_fg)
+            cos_gt, sin_gt = torch.cos(gt_angle_fg), torch.sin(gt_angle_fg)
+            angle_err = (abs(cos_pred-cos_gt)+abs(sin_pred-sin_gt))*((1.0-(cos_pred*cos_gt+sin_pred*sin_gt))**2)
+            loss[3] = 0.5*(angle_err).mean()
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain

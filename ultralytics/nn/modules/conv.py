@@ -7,6 +7,7 @@ from typing import List
 import numpy as np
 import torch
 import torch.nn as nn
+from functools import partial
 
 __all__ = (
     "Conv",
@@ -23,6 +24,11 @@ __all__ = (
     "Concat",
     "RepConv",
     "Index",
+    "PHA",
+    "CoordAtt",
+    "ShiftViTBlockv2",
+    "ChannelAttention2",
+    "SHA",
 )
 
 
@@ -711,3 +717,285 @@ class Index(nn.Module):
             (torch.Tensor): Selected tensor.
         """
         return x[self.index]
+class ChannelAttention2(nn.Module):
+
+    def __init__(self,
+                 in_features,
+                 hidden_features=None,
+                 out_features=None,
+                 act_layer=nn.LeakyReLU,
+                 drop=0.):
+        """ 
+        Args:
+            in_features (int): input channels
+            hidden_features (int): hidden channels, if None, set to in_features
+            out_features (int): out channels, if None, set to in_features
+            act_layer (callable): activation function class type
+            drop (float): drop out probability
+        """
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Conv2d(in_features, hidden_features, 1)
+        self.act = act_layer()
+        self.fc2 = nn.Conv2d(hidden_features, out_features, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = self.fc2(self.act(self.fc1(self.avg_pool(x))))
+        max_out = self.fc2(self.act(self.fc1(self.max_pool(x))))
+        out = self.sigmoid(avg_out + max_out)
+        return out
+class GroupNorm(nn.GroupNorm):
+
+    def __init__(self, num_channels=192, num_groups=1):
+        """ We use GroupNorm (group = 1) to approximate LayerNorm
+        for [N, C, H, W] layout"""
+        super(GroupNorm, self).__init__(num_groups, num_channels)
+
+class ShiftViTBlockv2(nn.Module):
+
+    def __init__(self,
+                 dim,
+                 n_div=12,
+                 ratio=4.,
+                 drop=0.,
+                 act_layer=nn.LeakyReLU,
+                 norm_layer=partial(GroupNorm, num_groups=1),
+                 input_resolution=None):
+        """ The building block of Shift-ViT network.
+
+        Args:
+            dim (int): feature dimension
+            n_div (int): how many divisions are used. Totally, 4/n_div of
+                channels will be shifted.
+            ratio (float): expand ratio 
+            drop (float): drop out prob.
+            drop_path (float): drop path prob.
+            act_layer (callable): activation function class type.
+            norm_layer (callable): normalization layer class type.
+            input_resolution (tuple): input resolution. This optional variable
+                is used to calculate the flops.
+
+        """
+        super(ShiftViTBlockv2, self).__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.ratio = ratio
+
+        self.norm2 = norm_layer(dim)
+        hidden_dim = int(dim * self.ratio)
+        self.channel = ChannelAttention2(in_features=dim,
+                       hidden_features=hidden_dim,
+                       act_layer=act_layer,
+                       drop=drop)
+        self.n_div = n_div
+
+        # self.att_map = None  # 👈 預留注意力圖空間
+
+    def forward(self, x):
+        x = self.shift_feat(x, self.n_div)
+        shortcut = x
+#############################################################################################
+        # normed = self.norm2(x)
+        # channel_weights = self.channel(normed)
+
+        # self.att_map = channel_weights.mean(dim=1, keepdim=True)  # (B, 1, 1, 1)
+#############################################################################################
+        x = shortcut + x * self.channel(self.norm2(x))
+        
+
+        return x
+
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}," \
+               f"input_resolution={self.input_resolution}," \
+               f"shift percentage={4.0 / self.n_div * 100}%."
+
+    @staticmethod
+    def shift_feat(x, n_div):
+        B, C, H, W = x.shape
+        g = C // n_div
+        out = torch.zeros_like(x)
+
+        out[:, g * 0:g * 1, :, :-10] = x[:, g * 0:g * 1, :, 10:]  # shift left
+        out[:, g * 1:g * 2, :, 10:] = x[:, g * 1:g * 2, :, :-10]  # shift right
+        out[:, g * 2:g * 3, :-10, :] = x[:, g * 2:g * 3, 10:, :]  # shift up
+        out[:, g * 3:g * 4, 10:, :] = x[:, g * 3:g * 4, :-10, :]  # shift down
+        # out[:, g * 0:g * 1, :, :-1] = x[:, g * 0:g * 1, :, 1:]  # shift left
+        # out[:, g * 1:g * 2, :, 1:] = x[:, g * 1:g * 2, :, :-1]  # shift right
+        # out[:, g * 2:g * 3, :-1, :] = x[:, g * 2:g * 3, 1:, :]  # shift up
+        # out[:, g * 3:g * 4, 1:, :] = x[:, g * 3:g * 4, :-1, :]  # shift down
+
+        out[:, g * 4:, :, :] = x[:, g * 4:, :, :]  # no shift
+        return out
+class h_sigmoid(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_sigmoid, self).__init__()
+        self.relu = nn.ReLU6(inplace=inplace)
+
+    def forward(self, x):
+        return self.relu(x + 3) / 6
+class h_swish(nn.Module):
+    def __init__(self, inplace=True):
+        super(h_swish, self).__init__()
+        self.sigmoid = h_sigmoid(inplace=inplace)
+
+    def forward(self, x):
+        return x * self.sigmoid(x)
+class CoordAtt(nn.Module):
+    def __init__(self, inp, reduction=32):
+        super(CoordAtt, self).__init__()
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+
+        mip = max(8, inp // reduction)
+
+        self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
+        self.bn1 = nn.BatchNorm2d(mip)
+        self.act = h_swish()
+
+        self.conv_h = nn.Conv2d(mip, inp, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, inp, kernel_size=1, stride=1, padding=0)
+
+        # self.att_map = None
+
+    def forward(self, x):
+        identity = x
+
+        n, c, h, w = x.size()
+        x_h = self.pool_h(x)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)
+
+        y = torch.cat([x_h, x_w], dim=2)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y)
+
+        x_h, x_w = torch.split(y, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)
+
+        a_h = self.conv_h(x_h).sigmoid()
+        a_w = self.conv_w(x_w).sigmoid()
+
+        # ⚠️ 儲存乘積的 attention map，做 mean 投影降到 1 channel
+        # self.att_map = (a_h * a_w).mean(dim=1, keepdim=True)  # shape: (B, 1, H, W)
+
+        out = identity * a_w * a_h
+
+        return out
+
+class PHA(nn.Module):
+    def __init__(self, dim,out, input_resolution=(64, 64), n_div=12, ratio=4., act_layer=nn.LeakyReLU, norm_layer=nn.BatchNorm2d):
+        super(PHA, self).__init__()
+
+        # Shared normalization layer for the input
+        self.norm1 = norm_layer(dim)
+
+        # CoordAtt branch
+        self.coord_att = CoordAtt(inp=dim)
+        self.pre_bottleneck = nn.Sequential(
+        nn.Conv2d(dim, dim // 2, 1),
+        nn.BatchNorm2d(dim // 2),
+        nn.ReLU(),
+        nn.Conv2d(dim // 2, dim, 1)
+        )
+        
+
+        # ShiftViTBlockv2 branch
+        self.shift_vit = ShiftViTBlockv2(
+            dim=dim,
+            n_div=n_div,
+            ratio=ratio,
+            act_layer=act_layer,
+            norm_layer=norm_layer,
+            input_resolution=input_resolution
+        )
+
+        # LayerNorm and MLP for final processing
+        self.norm2 = norm_layer(dim)
+        self.mlp = nn.Sequential(
+            nn.Conv2d(dim, int(dim * ratio), kernel_size=1),
+            act_layer(),
+            nn.Conv2d(int(dim * ratio), dim, kernel_size=1)
+        )
+        self.out = nn.Conv2d(dim, out, 1)if out else nn.Identity()
+
+    def forward(self, x):
+        x = self.pre_bottleneck(x)
+        x_norm = self.norm1(x)
+
+        # Parallel paths
+        coord_out = self.coord_att(x_norm)
+        shift_out = self.shift_vit(x_norm)
+
+        # 👇 儲存注意力圖供外部可視化用
+        # self.coord_att_map = self.coord_att.att_map  # (B, 1, H, W)
+        # self.shift_att_map = self.shift_vit.att_map  # (B, 1, 1, 1)
+
+
+
+        # Add1: Combine input with outputs from CoordAtt and ShiftViTBlockv2
+        add1 = x + coord_out + shift_out
+
+        # Apply LayerNorm and MLP
+        norm_out = self.norm2(add1)
+        mlp_out = self.mlp(norm_out)
+
+        # Add2: Combine add1 with processed output
+        add2 = add1 + mlp_out
+        output = self.out(add2)
+
+        return output
+        
+class SHA(nn.Module):
+    def __init__(self, dim,out, input_resolution=(64, 64), n_div=12, ratio=4., act_layer=nn.LeakyReLU, norm_layer=nn.BatchNorm2d):
+        super(SHA, self).__init__()
+
+        # Shared normalization layer for the input
+        self.norm1 = norm_layer(dim)
+
+        # CoordAtt branch
+        self.coord_att = CoordAtt(inp=dim)
+
+        # ShiftViTBlockv2 branch
+        self.shift_vit = ShiftViTBlockv2(
+            dim=dim,
+            n_div=n_div,
+            ratio=ratio,
+            act_layer=act_layer,
+            norm_layer=norm_layer,
+            input_resolution=input_resolution
+        )
+
+        # LayerNorm and MLP for final processing
+        self.norm2 = norm_layer(dim)
+        self.mlp = nn.Sequential(
+            nn.Conv2d(dim, int(dim * ratio), kernel_size=1),
+            act_layer(),
+            nn.Conv2d(int(dim * ratio), dim, kernel_size=1)
+        )
+        self.out = nn.Conv2d(dim, out, 1)if out else nn.Identity()
+
+    def forward(self, x):
+        x_norm = self.norm1(x)
+
+        # Parallel paths
+        # coord_out = self.coord_att(x_norm)
+        shift_out = self.shift_vit(x_norm)
+
+        # Add1: Combine input with outputs from CoordAtt and ShiftViTBlockv2
+        # add1 = x + coord_out + shift_out
+        add1 = shift_out + x
+        
+        ca_out = self.coord_att(add1)
+        ca_norm_out = self.norm2(ca_out)
+        mlp_out = self.mlp(ca_norm_out)
+
+        # Add2: Combine add1 with processed output
+        add2 = add1 + mlp_out
+        output = self.out(add2)
+
+        return output

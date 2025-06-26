@@ -177,7 +177,7 @@ class YOLODataset(BaseDataset):
         nf, nm, ne, nc, n = cache.pop("results")  # found, missing, empty, corrupt, total
         if exists and LOCAL_RANK in {-1, 0}:
             d = f"Scanning {cache_path}... {nf} images, {nm + ne} backgrounds, {nc} corrupt"
-            TQDM(None, desc=self.prefix + d, total=n, initial=n)  # display results
+            # TQDM(None, desc=self.prefix + d, total=n, initial=n)  # display results
             if cache["msgs"]:
                 LOGGER.info("\n".join(cache["msgs"]))  # display warnings
 

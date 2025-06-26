@@ -6,9 +6,9 @@ import re
 import types
 from copy import deepcopy
 from pathlib import Path
-
-import torch
 import torch.nn as nn
+import torch
+
 
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (

@@ -1,7 +1,7 @@
 from ultralytics import YOLO
  
 def main():
-    model = YOLO('/workspace/PHA_YOLO/ultralytics/cfg/models/v9/yolov9c_PHA.yaml', task="obb").load('/workspace/PHA_YOLO/yolov9c.pt')  # build from YAML and transfer weights
-    model.train(data='/workspace/PHA_YOLO/ultralytics/cfg/datasets/HRSC2016_MS.yaml', epochs=300, imgsz=640, batch=16, device=0,name="PHA-YOLO_hrsc2016ms")
+    model = YOLO('/ultralytics/cfg/models/v9/yolov9c_PHA.yaml', task="obb").load('yolov9c.pt')  # build from YAML and transfer weights
+    model.train(data='/ultralytics/cfg/datasets/HRSC2016_MS.yaml', epochs=100, imgsz=640, batch=16, device=[0,1,2,3], amp=False, optimizer='SGD', name="PHA-YOLO_hrsc2016ms")
 if __name__ == '__main__':
     main()

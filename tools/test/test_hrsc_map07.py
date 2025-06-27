@@ -2,10 +2,14 @@ from ultralytics import YOLO
 import numpy as np
 
 # # 載入模型與執行驗證
-model = YOLO('/workspace/PHA_YOLO/runs/obb/          /weight/best.pt')
+model = YOLO('/ultralytics/runs/obb/          /weight/best.pt')
 metrics = model.val(
-    data='/workspace/PHA_YOLO/ultralytics/cfg/datasets/hrsc.yaml',
+    data='/ultralytics/ultralytics/cfg/datasets/hrsc.yaml',
     split="test",
+    split='test',
+    task="obb",
+    conf=0.01,
+    nms=True,
 )
 
 # VOC AP 計算函式

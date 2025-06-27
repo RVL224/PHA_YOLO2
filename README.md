@@ -14,7 +14,6 @@ docker exec -it [YourContainerName] /bin/bash
 ```
   - install env from souce.
 ```
-pip install -r requirements.txt
 pip install -e .
 ```
 ## Train
@@ -32,10 +31,13 @@ python3 tools/train/train_cspdarknet_mvtec.py
 python3 tools/train/train_v8_ms.py
 python3 tools/train/train_v8_mvtec.py
 ```
-  - The trained weight file will appear in /worksapce/PHA_YOLO/runs/obb
-## Val and Demo
+  - The trained weight file will appear in /runs/obb
+## test and Demo
   - Modify the path and execute the program
 ```
 python3 tools/demo.py
-python3 tools/val.py
+python3 tools/tests/test_dota.py
+python3 tools/tests/test_hrsc_map07.py
+python3 tools/tests/test_ms_map12.py
+python3 tools/tests/test_mvtec.py
 ```

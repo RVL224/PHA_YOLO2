@@ -6,7 +6,6 @@ model = YOLO('/ultralytics/runs/obb/          /weight/best.pt')
 metrics = model.val(
     data='/ultralytics/ultralytics/cfg/datasets/hrsc.yaml',
     split="test",
-    split='test',
     task="obb",
     conf=0.01,
     nms=True,

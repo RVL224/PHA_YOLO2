@@ -2,7 +2,7 @@
 ## Installation
   - Download program
 ```
-git clone https://github.com/RVL224/PHA_YOLO.git
+git clone https://github.com/RVL224/PHA_YOLO2.git
 Change the folder name to PHA_YOLO
 ```
   - Create by Docker
@@ -19,7 +19,7 @@ pip install -e .
 ## Train
   - Datasets prepare
 ```
-go to rvlab NAS 163.13.132.234 ,_實驗室成員/PHA_YOLO資料集, acount and password in my ftp
+go to rvlab NAS 163.13.132.234 (old ip address) ,_實驗室成員/PHA_YOLO資料集, acount and password in my ftp
 ```
   - Start Training
 ```
